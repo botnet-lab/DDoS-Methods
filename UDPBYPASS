@@ -9,7 +9,6 @@ import socket,random,sys,time
 
 if len(sys.argv)==1:
     print('')
-    print('||| UDP MIX by Booter.Team |||')
     print('     Discord: iceyexploits#5555 ')
     print('')
     sys.exit('Syntax: ./udpmix 127.0.0.1 80 300')
